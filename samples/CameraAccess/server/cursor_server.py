@@ -457,11 +457,11 @@ class PinchDetector:
         """Track wrist movement. Call with landmark 0 (wrist) each frame.
 
         Sets hand_dx/hand_dy (normalized) representing hand motion since last frame.
-        Only tracks during HELD state (dragging).
+        Always tracks when hand is visible — hand contributes to cursor at all times.
         """
         self.hand_dx = 0.0
         self.hand_dy = 0.0
-        if self.state == PinchState.HELD and self._prev_wrist is not None:
+        if self._prev_wrist is not None:
             self.hand_dx = wrist_x - self._prev_wrist[0]
             self.hand_dy = wrist_y - self._prev_wrist[1]
         self._prev_wrist = (wrist_x, wrist_y)
@@ -1261,14 +1261,14 @@ class GazeTracker:
                 )
                 self._pinch.update_wrist(wrist.x, wrist.y)
 
-                # Apply hand movement to cursor during drag
-                if (self._pinch.state == PinchState.HELD
-                        and (abs(self._pinch.hand_dx) > 0.005
-                             or abs(self._pinch.hand_dy) > 0.005)):
+                # Apply hand movement to cursor (always when hand visible)
+                if (abs(self._pinch.hand_dx) > 0.003
+                        or abs(self._pinch.hand_dy) > 0.003):
                     scr_ox, scr_oy, scr_w, scr_h = get_screen_size()
-                    # Convert normalized hand delta to screen pixels
-                    hdx = self._pinch.hand_dx * scr_w * 1.5
-                    hdy = self._pinch.hand_dy * scr_h * 1.5
+                    # Scale: stronger during drag (1.5x), lighter otherwise (0.8x)
+                    scale = 1.5 if self._pinch.state == PinchState.HELD else 0.8
+                    hdx = self._pinch.hand_dx * scr_w * scale
+                    hdy = self._pinch.hand_dy * scr_h * scale
                     if self._kalman.initialized:
                         self._kalman.apply_flow(hdx, hdy)
 
