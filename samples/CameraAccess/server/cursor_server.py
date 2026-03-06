@@ -302,6 +302,15 @@ class GazeKalmanFilter:
             self._last_time = time.time()
             return
 
+        # Innovation gating: reject wild jumps
+        innovation = math.sqrt((mx - self.x[0])**2 + (my - self.x[1])**2)
+        if innovation > 800:
+            # Measurement is way off — reject entirely
+            return
+        if innovation > 300:
+            # Penalize large jumps with extra noise
+            confidence *= 0.3
+
         # Adaptive measurement noise: low confidence = high noise = ignore
         # High confidence = low noise = trust measurement
         noise_scale = max(0.3, 1.0 - confidence) * max(1.0, 50.0 / match_count)
@@ -407,6 +416,10 @@ class PinchDetector:
         self.hand_detected = False
         self.last_action = None
         self.last_action_time = 0.0
+        # Hand movement tracking (wrist position delta while dragging)
+        self._prev_wrist = None  # (x, y) normalized
+        self.hand_dx = 0.0       # Delta in normalized coords since last frame
+        self.hand_dy = 0.0
 
     def update(self, thumb_tip, index_tip):
         """Update state with new landmark positions.
@@ -440,9 +453,25 @@ class PinchDetector:
 
         return None
 
+    def update_wrist(self, wrist_x, wrist_y):
+        """Track wrist movement. Call with landmark 0 (wrist) each frame.
+
+        Sets hand_dx/hand_dy (normalized) representing hand motion since last frame.
+        Only tracks during HELD state (dragging).
+        """
+        self.hand_dx = 0.0
+        self.hand_dy = 0.0
+        if self.state == PinchState.HELD and self._prev_wrist is not None:
+            self.hand_dx = wrist_x - self._prev_wrist[0]
+            self.hand_dy = wrist_y - self._prev_wrist[1]
+        self._prev_wrist = (wrist_x, wrist_y)
+
     def on_hand_lost(self):
         """Call when no hand is detected - auto-release if held."""
         self.hand_detected = False
+        self._prev_wrist = None
+        self.hand_dx = 0.0
+        self.hand_dy = 0.0
         if self.state == PinchState.HELD:
             self.state = PinchState.OPEN
             self._close_count = 0
@@ -946,10 +975,12 @@ class GazeTracker:
         # scr/frame ratio (~4x). This made subtle head movements invisible.
         scr_ox2, scr_oy2, scr_w2, scr_h2 = get_screen_size()
         new_sf = (scr_w2 / cam_w + scr_h2 / cam_h) / 2.0 * best_scale
-        if abs(new_sf - self._scale_factor) > 0.5:
-            print(f"[scale] camera->screen factor: {new_sf:.2f} "
-                  f"(was {self._scale_factor:.2f}, sqrt_det={best_scale:.2f})", flush=True)
-        self._scale_factor = new_sf
+        # EMA smoothing to prevent wild scale jumps from noisy homographies
+        alpha = 0.15  # Slow adaptation — scale shouldn't change rapidly
+        if self._scale_factor < 0.5:
+            self._scale_factor = new_sf  # First time, jump to value
+        else:
+            self._scale_factor = alpha * new_sf + (1.0 - alpha) * self._scale_factor
         return (avg_x, avg_y, total_inliers, avg_conf)
 
     def _compute_optical_flow(self, prev_gray, curr_gray):
@@ -1226,11 +1257,25 @@ class GazeTracker:
                 hand = results.hand_landmarks[0]
                 thumb_tip = hand[4]   # Landmark 4: thumb tip
                 index_tip = hand[8]   # Landmark 8: index finger tip
+                wrist = hand[0]       # Landmark 0: wrist
 
                 action = self._pinch.update(
                     (thumb_tip.x, thumb_tip.y),
                     (index_tip.x, index_tip.y),
                 )
+                self._pinch.update_wrist(wrist.x, wrist.y)
+
+                # Apply hand movement to cursor during drag
+                if (self._pinch.state == PinchState.HELD
+                        and (abs(self._pinch.hand_dx) > 0.005
+                             or abs(self._pinch.hand_dy) > 0.005)):
+                    scr_ox, scr_oy, scr_w, scr_h = get_screen_size()
+                    # Convert normalized hand delta to screen pixels
+                    # Hand movement is inverted (hand moves right = view moves left)
+                    hdx = -self._pinch.hand_dx * scr_w * 1.5
+                    hdy = -self._pinch.hand_dy * scr_h * 1.5
+                    if self._kalman.initialized:
+                        self._kalman.apply_flow(hdx, hdy)
 
                 # Log distance periodically so we can tune thresholds
                 log_counter += 1
