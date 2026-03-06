@@ -61,43 +61,48 @@ struct GazeOverlayView: View {
   var body: some View {
     VStack {
       GazeStatusBar(gazeVM: gazeVM)
-      Spacer()
 
-      VStack(spacing: 6) {
-        if gazeVM.mode == .calibrating {
-          VStack(spacing: 8) {
-            Text("Calibrating: Look at the red dot on screen")
-              .font(.system(size: 14, weight: .medium))
-              .foregroundColor(.white)
-            Text("Point \(gazeVM.calibrationPointIndex + 1) of \(gazeVM.calibrationTotalPoints)")
-              .font(.system(size: 12, design: .monospaced))
-              .foregroundColor(.white.opacity(0.7))
-          }
-          .padding(.horizontal, 16)
-          .padding(.vertical, 12)
-          .background(Color.black.opacity(0.7))
-          .cornerRadius(12)
-        } else if gazeVM.mode == .noMatch {
-          Text(gazeVM.isCalibrated ? "No anchor match" : "Not calibrated - tap Calibrate")
+      if gazeVM.mode == .calibrating {
+        Spacer()
+        VStack(spacing: 8) {
+          Text("Calibrating: Look at the red dot on screen")
             .font(.system(size: 14, weight: .medium))
             .foregroundColor(.white)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(Color.black.opacity(0.6))
-            .cornerRadius(12)
-        }
-
-        if let point = gazeVM.gazeScreenPoint {
-          Text("(\(Int(point.x)), \(Int(point.y)))")
+          Text("Point \(gazeVM.calibrationPointIndex + 1) of \(gazeVM.calibrationTotalPoints)")
             .font(.system(size: 12, design: .monospaced))
             .foregroundColor(.white.opacity(0.7))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
-            .background(Color.black.opacity(0.5))
-            .cornerRadius(8)
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color.black.opacity(0.7))
+        .cornerRadius(12)
+        Spacer()
+      } else {
+        Spacer()
+
+        VStack(spacing: 6) {
+          if gazeVM.mode == .noMatch {
+            Text(gazeVM.isCalibrated ? "No anchor match" : "Not calibrated - tap Calibrate")
+              .font(.system(size: 14, weight: .medium))
+              .foregroundColor(.white)
+              .padding(.horizontal, 16)
+              .padding(.vertical, 8)
+              .background(Color.black.opacity(0.6))
+              .cornerRadius(12)
+          }
+
+          if let point = gazeVM.gazeScreenPoint {
+            Text("(\(Int(point.x)), \(Int(point.y)))")
+              .font(.system(size: 12, design: .monospaced))
+              .foregroundColor(.white.opacity(0.7))
+              .padding(.horizontal, 12)
+              .padding(.vertical, 4)
+              .background(Color.black.opacity(0.5))
+              .cornerRadius(8)
+          }
+        }
+        .padding(.bottom, 120)
       }
-      .padding(.bottom, 80)
     }
     .padding(.all, 24)
   }

@@ -139,7 +139,7 @@ class GazeControlViewModel: ObservableObject {
   // MARK: - Calibration
 
   func startCalibration() async {
-    guard isActive else { return }
+    guard isActive, mode != .calibrating else { return }
 
     stopInterpolation()
     mode = .calibrating
