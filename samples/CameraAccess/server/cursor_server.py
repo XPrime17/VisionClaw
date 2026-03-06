@@ -837,7 +837,7 @@ class GazeTracker:
 
             time.sleep(2.0)
 
-    def _match_screen_content(self, cam_feats, cam_w, cam_h, min_matches=10):
+    def _match_screen_content(self, cam_feats, cam_w, cam_h, min_matches=7):
         """Match camera frame against per-monitor screenshots.
 
         Uses retina scaling and per-monitor feature extraction from the
