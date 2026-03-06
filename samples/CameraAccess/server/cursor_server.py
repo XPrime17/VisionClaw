@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-macOS Cursor Control HTTP Server - Environment-Anchored Gaze Tracking.
+macOS Cursor Control HTTP Server - Hybrid Gaze Tracking.
 
-Uses a one-time calibration to capture room features (desk, walls, bezels)
-at known screen positions. At runtime, matches camera frames against these
-stable environment anchors instead of volatile screen content. Optical flow
-provides smooth inter-frame tracking between anchor matches.
+Uses three layers for gaze-to-cursor mapping:
+1. Environment anchors (calibrated): stable room features (desk, walls, bezels)
+2. Screen content (live): periodic screenshots matched against camera frames
+3. Optical flow: smooth inter-frame tracking between anchor/screen matches
+
+Environment anchors provide stable baseline. Screen content adds pixel-precise
+refinement when visible. Both are fused by inlier-weighted averaging.
 
 Requires Accessibility permission for Terminal.
 
@@ -376,6 +379,12 @@ class GazeTracker:
         self._frame_count = 0  # Frames since last anchor match
         self._anchor_interval = 5  # Do anchor matching every N frames
 
+        # Screen content layer (hybrid matching)
+        self._screen_feats = None  # Latest screenshot SuperPoint features
+        self._screen_meta = None   # {left, top, width, height, scale}
+        self._screen_lock = threading.Lock()
+        self._screen_capture_active = False
+
         # Load saved calibration if exists
         self._load_calibration()
 
@@ -536,7 +545,7 @@ class GazeTracker:
             self._current_pos = (nx, ny)
             flow_applied = True
 
-        # -- Anchor matching: periodic correction --
+        # -- Hybrid matching: periodic absolute correction --
         need_anchor = (
             self._current_pos is None  # No position yet
             or self._frame_count >= self._anchor_interval  # Time for correction
@@ -545,15 +554,42 @@ class GazeTracker:
 
         if need_anchor:
             self._frame_count = 0
-            anchor_result = self._match_anchors(gray, cam_w, cam_h)
+            # Extract features once, reuse for both matchers
+            cam_feats = extract_features(gray)
 
-            if anchor_result is not None:
-                sx, sy, mc, conf = anchor_result
+            anchor_result = self._match_anchors(gray, cam_w, cam_h, cam_feats=cam_feats)
+            screen_result = self._match_screen_content(cam_feats, cam_w, cam_h)
+
+            # Fuse results: weighted average by inlier count, or pick best
+            best = None
+            source = None
+            if anchor_result and screen_result:
+                a_x, a_y, a_mc, a_conf = anchor_result
+                s_x, s_y, s_mc, s_conf = screen_result
+                total = a_mc + s_mc
+                w_a = a_mc / total
+                w_s = s_mc / total
+                best = (
+                    a_x * w_a + s_x * w_s,
+                    a_y * w_a + s_y * w_s,
+                    a_mc + s_mc,
+                    a_conf * w_a + s_conf * w_s,
+                )
+                source = f"HYBRID env={a_mc} scr={s_mc}"
+            elif anchor_result:
+                best = anchor_result
+                source = "ENV"
+            elif screen_result:
+                best = screen_result
+                source = "SCREEN"
+
+            if best is not None:
+                sx, sy, mc, conf = best
                 self._current_pos = (sx, sy)
                 self._last_anchor_time = time.time()
                 self._prev_gray = gray
                 elapsed_ms = (time.time() - t0) * 1000
-                print(f"[locate] {elapsed_ms:.0f}ms ANCHOR x={sx:.0f} y={sy:.0f} "
+                print(f"[locate] {elapsed_ms:.0f}ms {source} x={sx:.0f} y={sy:.0f} "
                       f"matches={mc} conf={conf:.2f}", flush=True)
                 return (sx, sy, mc, conf)
 
@@ -576,12 +612,13 @@ class GazeTracker:
         print(f"[locate] {elapsed_ms:.0f}ms NO MATCH", flush=True)
         return None
 
-    def _match_anchors(self, cam_gray, cam_w, cam_h, min_matches=5):
+    def _match_anchors(self, cam_gray, cam_w, cam_h, cam_feats=None, min_matches=5):
         """Match camera frame against calibration anchors.
 
         Returns (screen_x, screen_y, match_count, confidence) or None.
         """
-        cam_feats = extract_features(cam_gray)
+        if cam_feats is None:
+            cam_feats = extract_features(cam_gray)
         cam_desc = cam_feats["descriptors"]
         cam_kps = cam_feats["keypoints"]
 
@@ -756,6 +793,119 @@ class GazeTracker:
         except Exception as e:
             print(f"[Calibrate] Failed to load calibration: {e}", flush=True)
 
+    # -- Screen content capture (hybrid layer) --
+
+    def start_screen_capture(self):
+        """Start background thread to periodically capture screen content."""
+        if self._screen_capture_active:
+            return
+        self._screen_capture_active = True
+        t = threading.Thread(target=self._screen_capture_loop, daemon=True)
+        t.start()
+        print("[ScreenContent] Background capture started (every 3s)", flush=True)
+
+    def _screen_capture_loop(self):
+        """Background: capture screenshot + extract features periodically."""
+        _MAX_SCREEN_DIM = 1024
+        sct = mss.mss()
+        while self._screen_capture_active:
+            try:
+                monitor = sct.monitors[0]  # Full virtual screen
+                screenshot = sct.grab(monitor)
+                img = np.array(screenshot)
+                gray = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
+
+                h, w = gray.shape[:2]
+                scale = 1.0
+                max_dim = max(h, w)
+                if max_dim > _MAX_SCREEN_DIM:
+                    scale = max_dim / _MAX_SCREEN_DIM
+                    gray = cv2.resize(gray, (int(w / scale), int(h / scale)))
+
+                feats = extract_features(gray)
+                meta = {
+                    "left": monitor["left"],
+                    "top": monitor["top"],
+                    "width": monitor["width"],
+                    "height": monitor["height"],
+                    "scale": scale,
+                }
+
+                with self._screen_lock:
+                    self._screen_feats = feats
+                    self._screen_meta = meta
+
+            except Exception as e:
+                print(f"[ScreenContent] Capture error: {e}", flush=True)
+
+            time.sleep(3.0)
+
+    def _match_screen_content(self, cam_feats, cam_w, cam_h, min_matches=8):
+        """Match camera frame against latest screenshot.
+
+        Returns (screen_x, screen_y, match_count, confidence) or None.
+        """
+        with self._screen_lock:
+            feats = self._screen_feats
+            meta = self._screen_meta
+
+        if feats is None or meta is None:
+            return None
+
+        cam_desc = cam_feats["descriptors"]
+        cam_kps = cam_feats["keypoints"]
+        scr_desc = feats["descriptors"]
+        scr_kps = feats["keypoints"]
+
+        if len(cam_desc) < 2 or len(scr_desc) < 2:
+            return None
+
+        raw = _bf.knnMatch(cam_desc, scr_desc, k=2)
+        matches = []
+        for pair in raw:
+            if len(pair) == 2:
+                m, n = pair
+                if m.distance < 0.80 * n.distance:
+                    matches.append(m)
+
+        if len(matches) < min_matches:
+            return None
+
+        src_pts = cam_kps[[m.queryIdx for m in matches]].reshape(-1, 1, 2)
+        dst_pts = scr_kps[[m.trainIdx for m in matches]].reshape(-1, 1, 2)
+
+        H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+        if H is None:
+            return None
+
+        inliers = int(mask.sum()) if mask is not None else 0
+        if inliers < min_matches:
+            return None
+
+        det = np.linalg.det(H[:2, :2])
+        if det < 0.01 or det > 100.0:
+            return None
+
+        confidence = inliers / len(matches) if matches else 0.0
+
+        # Project camera center to screenshot space
+        cam_center = np.float32([[cam_w / 2, cam_h / 2]]).reshape(-1, 1, 2)
+        scr_pt = cv2.perspectiveTransform(cam_center, H)
+        px = float(scr_pt[0][0][0])
+        py = float(scr_pt[0][0][1])
+
+        # Scale from downscaled screenshot to actual screen coordinates
+        scale = meta["scale"]
+        screen_x = meta["left"] + px * scale
+        screen_y = meta["top"] + py * scale
+
+        # Clamp to screen bounds
+        scr_ox, scr_oy, scr_w, scr_h = get_screen_size()
+        screen_x = max(scr_ox, min(scr_ox + scr_w, screen_x))
+        screen_y = max(scr_oy, min(scr_oy + scr_h, screen_y))
+
+        return (screen_x, screen_y, inliers, confidence)
+
 
 # ---------------------------------------------------------------------------
 # Global tracker instance
@@ -846,5 +996,6 @@ if __name__ == "__main__":
     print(f"[CursorServer] Accessibility: {Quartz.CoreGraphics.CGPreflightPostEventAccess()}")
     print(f"[CursorServer] Calibrated: {gaze_tracker.is_calibrated()} "
           f"({len(gaze_tracker._anchors)} anchors)")
+    gaze_tracker.start_screen_capture()
     print(f"[CursorServer] Starting on http://0.0.0.0:8765")
     app.run(host="0.0.0.0", port=8765, threaded=True)
