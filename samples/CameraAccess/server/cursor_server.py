@@ -223,7 +223,7 @@ _extractor = SuperPoint(max_num_keypoints=2048).eval().to(_device)
 _bf_cross = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
 
 # Max camera frame dimension (downscale large frames before extraction)
-_MAX_CAM_DIM = 960
+_MAX_CAM_DIM = 640
 
 
 class ScreenshotCache:
