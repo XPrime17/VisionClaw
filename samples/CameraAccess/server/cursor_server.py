@@ -206,17 +206,24 @@ def handle_health():
 
 
 # ---------------------------------------------------------------------------
-# Screenshot ORB matching for /locate
+# Screenshot SIFT matching for /locate
 # ---------------------------------------------------------------------------
 
 class ScreenshotCache:
-    """Caches a screenshot with pre-computed ORB features for fast matching."""
+    """Caches a screenshot with pre-computed SIFT features for fast matching.
 
-    def __init__(self, refresh_interval=1.0, max_features=2000):
+    SIFT is scale-invariant, so it matches reliably even when the camera
+    is far from the screen (unlike ORB which needs close-up views).
+    """
+
+    def __init__(self, refresh_interval=1.0, max_features=5000):
         self.refresh_interval = refresh_interval
         self.max_features = max_features
-        self.orb = cv2.ORB_create(nfeatures=max_features)
-        self.bf_matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+        self.sift = cv2.SIFT_create(nfeatures=max_features)
+        # FLANN matcher is much faster than brute-force for SIFT's float descriptors
+        index_params = dict(algorithm=1, trees=5)  # FLANN_INDEX_KDTREE
+        search_params = dict(checks=50)
+        self.flann = cv2.FlannBasedMatcher(index_params, search_params)
         self._lock = threading.Lock()
         self._keypoints = None
         self._descriptors = None
@@ -247,12 +254,9 @@ class ScreenshotCache:
         logical_w = Quartz.CGDisplayPixelsWide(Quartz.CGMainDisplayID())
         scale = primary_w / logical_w if logical_w > 0 else 1.0
 
-        # The captured image width is physical pixels of the virtual screen
-        # mss monitor coords are already in logical (point) units on macOS
-        # but the captured image is at physical pixel resolution
         img_h, img_w = gray.shape[:2]
 
-        kp, desc = self.orb.detectAndCompute(gray, None)
+        kp, desc = self.sift.detectAndCompute(gray, None)
         with self._lock:
             self._keypoints = kp
             self._descriptors = desc
@@ -288,13 +292,13 @@ class ScreenshotCache:
 
         cam_h, cam_w = cam_img.shape[:2]
 
-        # Extract ORB features from camera frame
-        cam_kp, cam_desc = self.orb.detectAndCompute(cam_img, None)
+        # Extract SIFT features from camera frame
+        cam_kp, cam_desc = self.sift.detectAndCompute(cam_img, None)
         if cam_desc is None or len(cam_kp) < min_matches:
             return None
 
         # KNN match + Lowe's ratio test
-        matches = self.bf_matcher.knnMatch(cam_desc, screen_desc, k=2)
+        matches = self.flann.knnMatch(cam_desc, screen_desc, k=2)
         good = []
         for pair in matches:
             if len(pair) == 2:
@@ -337,7 +341,7 @@ class ScreenshotCache:
         return (sx, sy, inliers, confidence)
 
 
-screenshot_cache = ScreenshotCache(refresh_interval=1.0, max_features=10000)
+screenshot_cache = ScreenshotCache(refresh_interval=1.0, max_features=5000)
 
 
 @app.route("/locate", methods=["POST"])
