@@ -133,7 +133,7 @@ class CursorControlBridge: ObservableObject {
     req.httpMethod = "POST"
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
     do {
-      let (data, response) = try await session.data(for: req)
+      let (data, response) = try await pingSession.data(for: req)
       guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
       guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
       return CalibrationPoint(
@@ -155,7 +155,8 @@ class CursorControlBridge: ObservableObject {
     req.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
     req.httpBody = imageData
     do {
-      let (data, response) = try await session.data(for: req)
+      // Use pingSession (5s timeout) since server extracts features
+      let (data, response) = try await pingSession.data(for: req)
       guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
       guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
       let status = json["status"] as? String
@@ -177,7 +178,8 @@ class CursorControlBridge: ObservableObject {
     req.httpMethod = "POST"
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
     do {
-      let (data, response) = try await session.data(for: req)
+      // Use pingSession (5s timeout) since finish saves calibration to disk
+      let (data, response) = try await pingSession.data(for: req)
       guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return false }
       guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let status = json["status"] as? String, status == "ok"
