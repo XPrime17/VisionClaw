@@ -307,9 +307,15 @@ class GazeKalmanFilter:
         self.x = self.x + K @ y_res
         self.P = (np.eye(4) - K @ H) @ self.P
 
-    def position(self):
-        """Return current estimated position."""
-        return float(self.x[0]), float(self.x[1])
+    def position(self, lead_time=0.0):
+        """Return current estimated position, optionally projected ahead.
+
+        lead_time: seconds to project ahead using velocity (compensates
+        for network + processing latency so cursor leads the measurement).
+        """
+        x = float(self.x[0] + self.x[2] * lead_time)
+        y = float(self.x[1] + self.x[3] * lead_time)
+        return x, y
 
     def apply_flow(self, dx_screen, dy_screen):
         """Apply optical flow delta directly to state."""
@@ -319,9 +325,13 @@ class GazeKalmanFilter:
 
 
 _device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-_extractor = SuperPoint(max_num_keypoints=2048).eval().to(_device)
-_bf = cv2.BFMatcher(cv2.NORM_L2)
-_MAX_CAM_DIM = 640
+_extractor = SuperPoint(max_num_keypoints=1024).eval().to(_device)
+# FLANN: ~3x faster than BFMatcher for kNN (KD-tree, O(log n) vs O(n))
+_flann = cv2.FlannBasedMatcher(
+    {"algorithm": 1, "trees": 4},   # FLANN_INDEX_KDTREE
+    {"checks": 64},
+)
+_MAX_CAM_DIM = 480
 
 
 def extract_features(gray_img):
@@ -702,7 +712,10 @@ class GazeTracker:
             print(f"[locate] {elapsed_ms:.0f}ms NO MATCH", flush=True)
             return None
 
-        kx, ky = self._kalman.position()
+        # Project ahead by ~50ms to compensate for network + processing delay.
+        # The frame we just processed was captured ~50ms ago, so predict where
+        # the user is looking NOW, not where they were looking THEN.
+        kx, ky = self._kalman.position(lead_time=0.05)
 
         # Clamp to screen bounds
         scr_ox, scr_oy, scr_w, scr_h = get_screen_size()
@@ -745,7 +758,7 @@ class GazeTracker:
             if len(anc_desc) < 2:
                 continue
 
-            raw = _bf.knnMatch(cam_desc, anc_desc, k=2)
+            raw = _flann.knnMatch(cam_desc, anc_desc, k=2)
             matches = []
             for pair in raw:
                 if len(pair) == 2:
@@ -979,7 +992,7 @@ class GazeTracker:
 
     def _screen_capture_loop(self):
         """Background: capture per-monitor screenshots + extract features."""
-        _MAX_SCREEN_DIM = 1600
+        _MAX_SCREEN_DIM = 1024
         while self._screen_capture_active:
             try:
                 monitors = []
@@ -1046,7 +1059,7 @@ class GazeTracker:
             if len(scr_desc) < 2:
                 continue
 
-            raw = _bf.knnMatch(cam_desc, scr_desc, k=2)
+            raw = _flann.knnMatch(cam_desc, scr_desc, k=2)
             matches = []
             for pair in raw:
                 if len(pair) == 2:

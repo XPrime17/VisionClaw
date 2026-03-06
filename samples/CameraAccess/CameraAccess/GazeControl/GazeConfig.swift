@@ -20,5 +20,6 @@ enum GazeConfig {
   static let smoothingFactor: Double = 0.15  // Exponential moving average (lower = smoother)
 
   // JPEG quality for /locate frames (0.0-1.0, lower = smaller payload, faster upload)
-  static let locateJpegQuality: CGFloat = 0.3
+  // 0.2 is sufficient — server downscales to 480px anyway
+  static let locateJpegQuality: CGFloat = 0.2
 }
