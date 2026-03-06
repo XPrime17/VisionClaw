@@ -36,6 +36,7 @@ import math
 import os
 import ssl
 import subprocess
+import sys
 import threading
 import time
 
@@ -404,7 +405,7 @@ win.makeKeyAndOrderFront_(None)
 app.run()
 '''
     _dot_process = subprocess.Popen(
-        ["python3", "-c", script],
+        [sys.executable, "-c", script],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
