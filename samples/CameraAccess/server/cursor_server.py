@@ -380,7 +380,6 @@ class GazeTracker:
         self._frame_count = 0  # Frames since last anchor match
         self._anchor_interval = 5  # Do anchor matching every N frames
         self._min_accept_matches = 12  # Minimum inliers to accept an anchor result
-        self._ema_alpha = 0.35  # EMA blend: 0=ignore new, 1=no smoothing
 
         # Screen content layer (per-monitor, retina-aware)
         self._screen_monitors = []  # List of (monitor, feats, retina_scale, feat_scale)
@@ -563,31 +562,37 @@ class GazeTracker:
             anchor_result = self._match_anchors(gray, cam_w, cam_h, cam_feats=cam_feats)
             screen_result = self._match_screen_content(cam_feats, cam_w, cam_h)
 
-            # Fuse results: screen content is 3x more trusted (direct pixel coords)
+            # Prefer screen content when confident (direct pixel coords).
+            # Only use env anchors as fallback or for minor correction.
             best = None
             source = None
-            if anchor_result and screen_result:
-                a_x, a_y, a_mc, a_conf = anchor_result
+            if screen_result:
                 s_x, s_y, s_mc, s_conf = screen_result
-                # Screen content gives direct pixel coordinates — weight 3x
-                w_a = a_mc
-                w_s = s_mc * 3.0
-                total = w_a + w_s
-                w_a /= total
-                w_s /= total
-                best = (
-                    a_x * w_a + s_x * w_s,
-                    a_y * w_a + s_y * w_s,
-                    a_mc + s_mc,
-                    a_conf * w_a + s_conf * w_s,
-                )
-                source = f"HYBRID env={a_mc} scr={s_mc}"
+                if s_mc >= 15:
+                    # Screen content is confident — use exclusively
+                    best = screen_result
+                    source = f"SCREEN scr={s_mc}"
+                elif anchor_result:
+                    # Weak screen + env anchor: blend with screen dominant
+                    a_x, a_y, a_mc, a_conf = anchor_result
+                    w_a = a_mc
+                    w_s = s_mc * 3.0
+                    total = w_a + w_s
+                    w_a /= total
+                    w_s /= total
+                    best = (
+                        a_x * w_a + s_x * w_s,
+                        a_y * w_a + s_y * w_s,
+                        a_mc + s_mc,
+                        a_conf * w_a + s_conf * w_s,
+                    )
+                    source = f"HYBRID env={a_mc} scr={s_mc}"
+                else:
+                    best = screen_result
+                    source = f"SCREEN scr={s_mc}"
             elif anchor_result:
                 best = anchor_result
                 source = "ENV"
-            elif screen_result:
-                best = screen_result
-                source = "SCREEN"
 
             if best is not None:
                 sx, sy, mc, conf = best
@@ -599,30 +604,16 @@ class GazeTracker:
                     print(f"[locate] {elapsed_ms:.0f}ms {source} REJECTED "
                           f"(matches={mc} < {self._min_accept_matches})", flush=True)
                 else:
-                    # EMA smoothing: blend new result with current position
-                    if self._current_pos is not None:
-                        ox, oy = self._current_pos
-                        dx = sx - ox
-                        dy = sy - oy
-                        dist = math.sqrt(dx * dx + dy * dy)
-
-                        # Dead zone: if new result is very close, skip update
-                        if dist < 80:
-                            self._prev_gray = gray
-                            self._last_anchor_time = time.time()
-                            elapsed_ms = (time.time() - t0) * 1000
-                            return (ox, oy, mc, conf)
-
-                        # Higher alpha for high-confidence results
-                        alpha = self._ema_alpha
-                        if conf > 0.6:
-                            alpha = min(0.6, alpha * 1.5)
-                        sx = ox + dx * alpha
-                        sy = oy + dy * alpha
-
+                    # No server-side smoothing — iOS handles all smoothing
+                    # via 60fps lerp. Server returns raw positions for
+                    # minimum latency.
                     self._current_pos = (sx, sy)
                     self._last_anchor_time = time.time()
                     self._prev_gray = gray
+
+                    # Move cursor directly from server (skip /move round-trip)
+                    move_mouse(sx, sy)
+
                     elapsed_ms = (time.time() - t0) * 1000
                     print(f"[locate] {elapsed_ms:.0f}ms {source} x={sx:.0f} y={sy:.0f} "
                           f"matches={mc} conf={conf:.2f}", flush=True)
@@ -635,6 +626,7 @@ class GazeTracker:
         if self._current_pos is not None:
             nx, ny = self._current_pos
             if flow_applied:
+                move_mouse(nx, ny)  # Direct cursor move, skip /move round-trip
                 age = time.time() - self._last_anchor_time
                 if elapsed_ms > 20:  # Only log slow frames
                     print(f"[locate] {elapsed_ms:.0f}ms FLOW x={nx:.0f} y={ny:.0f} "
