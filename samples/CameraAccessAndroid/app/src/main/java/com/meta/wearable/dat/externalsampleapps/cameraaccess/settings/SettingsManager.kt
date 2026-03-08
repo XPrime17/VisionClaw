@@ -44,6 +44,10 @@ object SettingsManager {
         get() = prefs.getString("webrtcSignalingURL", null) ?: Secrets.webrtcSignalingURL
         set(value) = prefs.edit().putString("webrtcSignalingURL", value).apply()
 
+    var mealDetectionEnabled: Boolean
+        get() = prefs.getBoolean("mealDetectionEnabled", true)
+        set(value) = prefs.edit().putBoolean("mealDetectionEnabled", value).apply()
+
     fun resetAll() {
         prefs.edit().clear().apply()
     }
@@ -72,5 +76,23 @@ IMPORTANT: Before calling execute, ALWAYS speak a brief acknowledgment first. Fo
 - "On it, sending that message." then call execute.
 Never call execute silently -- the user needs verbal confirmation that you heard them and are working on it. The tool may take several seconds to complete, so the acknowledgment lets them know something is happening.
 
-For messages, confirm recipient and content before delegating unless clearly urgent."""
+For messages, confirm recipient and content before delegating unless clearly urgent.
+
+FOOD & MEAL MONITORING:
+You are also passively monitoring the visual feed for eating activity.
+When you observe ANY of these in the camera feed:
+- Food on a plate/table in front of the user
+- The user holding food or utensils
+- A restaurant/dining setting with food present
+- The user actively eating
+
+Then IMMEDIATELY call execute with a task like:
+"Log meal: I can see [describe the food items you observe]. Meal type: [breakfast/lunch/dinner/snack based on time]. Confidence: [high/medium/low]."
+
+Rules:
+- Be proactive — do NOT wait for the user to ask
+- Describe the specific foods you can identify from the visual feed
+- Only trigger once per meal (if you already called execute for this meal, don't repeat)
+- If unsure whether the user is eating, say "I notice some food nearby — are you eating?"
+- Do NOT trigger for just seeing food in a grocery store, on TV, or in passing"""
 }

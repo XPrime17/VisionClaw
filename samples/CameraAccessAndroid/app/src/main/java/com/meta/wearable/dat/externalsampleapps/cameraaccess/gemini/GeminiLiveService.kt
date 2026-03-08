@@ -183,6 +183,24 @@ class GeminiLiveService {
         }
     }
 
+    fun sendText(text: String) {
+        if (_connectionState.value != GeminiConnectionState.Ready) return
+        sendExecutor.execute {
+            val json = JSONObject().apply {
+                put("clientContent", JSONObject().apply {
+                    put("turns", JSONArray().put(JSONObject().apply {
+                        put("role", "user")
+                        put("parts", JSONArray().put(JSONObject().apply {
+                            put("text", text)
+                        }))
+                    }))
+                    put("turnComplete", true)
+                })
+            }
+            webSocket?.send(json.toString())
+        }
+    }
+
     // Private
 
     private fun resolveConnect(success: Boolean) {
@@ -222,6 +240,9 @@ class GeminiLiveService {
                     put("activityHandling", "START_OF_ACTIVITY_INTERRUPTS")
                     put("turnCoverage", "TURN_INCLUDES_ALL_INPUT")
                 })
+                // Proactive mode disabled — "proactivity" field not recognized
+                // by current Gemini model. Meal detection relies on the
+                // fallback vision check timer instead.
                 put("inputAudioTranscription", JSONObject())
                 put("outputAudioTranscription", JSONObject())
             })

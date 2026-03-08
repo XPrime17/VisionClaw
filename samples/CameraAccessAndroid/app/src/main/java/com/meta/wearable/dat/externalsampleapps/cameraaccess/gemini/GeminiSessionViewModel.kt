@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.meta.wearable.dat.externalsampleapps.cameraaccess.settings.SettingsManager
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.openclaw.OpenClawBridge
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.openclaw.OpenClawConnectionState
 import com.meta.wearable.dat.externalsampleapps.cameraaccess.openclaw.ToolCallRouter
@@ -42,6 +43,7 @@ class GeminiSessionViewModel : ViewModel() {
     private val audioManager = AudioManager()
     private var lastVideoFrameTime: Long = 0
     private var stateObservationJob: Job? = null
+    private var visionCheckJob: Job? = null
 
     var streamingMode: StreamingMode = StreamingMode.GLASSES
 
@@ -148,6 +150,23 @@ class GeminiSessionViewModel : ViewModel() {
                     return@connect
                 }
 
+                // Start fallback vision check timer (every 30s)
+                // Safety net: if proactive mode alone doesn't trigger meal detection,
+                // this periodically asks Gemini to evaluate the visual feed
+                visionCheckJob = viewModelScope.launch {
+                    while (isActive) {
+                        delay(30_000L)
+                        if (_uiState.value.isGeminiActive &&
+                            _uiState.value.connectionState == GeminiConnectionState.Ready &&
+                            !geminiService.isModelSpeaking.value &&
+                            SettingsManager.mealDetectionEnabled) {
+                            geminiService.sendText(
+                                "Check the current video frame. If you see food or eating activity, call execute to log the meal. If not, say nothing."
+                            )
+                        }
+                    }
+                }
+
                 // Start mic capture
                 try {
                     audioManager.startCapture()
@@ -173,6 +192,8 @@ class GeminiSessionViewModel : ViewModel() {
         geminiService.disconnect()
         stateObservationJob?.cancel()
         stateObservationJob = null
+        visionCheckJob?.cancel()
+        visionCheckJob = null
         _uiState.value = GeminiUiState()
     }
 
